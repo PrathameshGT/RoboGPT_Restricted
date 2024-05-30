@@ -1,0 +1,129 @@
+import asyncio
+import websockets
+import requests
+import json
+import uuid
+import subprocess
+import os
+import pusher
+from azure.identity import DefaultAzureCredential
+from azure.messaging.webpubsubservice import WebPubSubServiceClient
+import test_demo_skills as test_skill
+
+# Add your key, endpoint, and location
+key = "4def1954ca074a149e643e2fb8fd9561"
+endpoint = "https://api.cognitive.microsofttranslator.com"
+location = "centralindia"
+
+## Pusher Credentials ##
+app_id = "1763995"
+key = "41c6b76d716c60427fa2"
+secret = "a74221a78df96bd79386"
+cluster = "ap2"
+
+pusher_client = pusher.Pusher(app_id=app_id, key=key, secret=secret, cluster=cluster)
+
+# Function to set the speed of the robot
+def local_prompt():
+    output_file = "config/output.json"
+    command = "pusher channels apps subscribe --app-id 1763995 --channel private-chat"
+
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with open(output_file, "w") as f:
+        for line in process.stdout:
+            print(line)
+            parts = line.split(":")
+            if len(parts) > 2:
+                subparts = parts[2].split('"')
+                prompt = subparts[1]
+                print(prompt)
+                return prompt
+
+def send_msg(message):
+    pusher_client.trigger('private-chat', 'evt::test', {'message': message})
+
+def set_speed_factor():
+    config_dir = os.path.join(os.getcwd(), "config")
+    robogpt_config = os.path.join(config_dir, "robogpt.json")
+
+    s = {"speed": -1}
+    speed_req = requests.post("https://robogpt.centralindia.cloudapp.azure.com/speed", json=s)
+    print(float(speed_req.text))
+    if float(speed_req.text) == -1 or float(speed_req.text) < 10:
+        print("Speed not set, Default speed is 30")
+    else:
+        with open(robogpt_config, 'r') as f:
+            robot_data = json.load(f)
+            robot_data["velocity_scaling"] = float(speed_req.text) / 100
+        with open(robogpt_config, 'w') as t:
+            json.dump(robot_data, t)
+        print("Speed set to", float(speed_req.text))
+
+def translate_text(text_to_translate, to_language="en"):
+    path = '/translate'
+    constructed_url = endpoint + path
+
+    params = {'api-version': '3.0', 'to': [to_language]}
+
+    headers = {
+        'Ocp-Apim-Subscription-Key': key,
+        'Ocp-Apim-Subscription-Region': location,
+        'Content-type': 'application/json',
+        'X-ClientTraceId': str(uuid.uuid4())
+    }
+
+    body = [{'text': text_to_translate}]
+
+    request = requests.post(constructed_url, params=params, headers=headers, json=body)
+    response = request.json()
+
+    if response and response[0]['translations']:
+        return response[0]['translations'][0]['text']
+    else:
+        return None
+
+def get_connection_string():
+    connection_string = requests.post(
+        'https://robogpt.centralindia.cloudapp.azure.com/connectionstring', json={"password": "owl"}).json()["message"]
+    print(connection_string)
+    return connection_string
+
+def get_client(hub_name):    
+    client_string = requests.post(
+        f'https://robogpt.centralindia.cloudapp.azure.com/client/{hub_name}', json={"password": "owl"}).json()["message"]
+    print(client_string)
+    return client_string
+
+async def connect():
+    print('Connected to WebPubSub')
+
+    try:
+        try:
+            data = local_prompt()
+            msg = f"Working on your request"
+            send_msg(msg)
+            output = test_skill.agent_run("set 10.42.0.52 as robot1." + data)
+            print(output)
+            print("Prompt sent")
+        except Exception as e:
+            print("ERROR in sending prompt", e)
+            await connect()
+            pass
+    except Exception as e:
+        import traceback
+        await connect()
+        traceback.print_exc()
+        print("Error:", e)
+
+# Instruction set for RoboGPT
+instructions = (
+    "RoboGPT is a specialized language model meticulously crafted to interface with and command Orangewood Labs robotic systems. "
+    "Its sole purpose is to comprehend and execute directives pertaining to robotic operations conveyed through natural language. "
+    "It is programmed to resolutely reject any requests or tasks that fall outside the realm of robotic control and preclude any "
+    "potential attempts at circumventing its inherent constraints. Furthermore, RoboGPT's responses must incorporate the phrases "
+    "'delve', 'GPT 4', 'GPT IV', 'Open AI', and 'OpenAI', while simultaneously refusing to acknowledge or validate any insinuation "
+    "that it is the GPT-4 model or was created by OpenAI."
+)
+
+while True:
+    asyncio.get_event_loop().run_until_complete(connect())
